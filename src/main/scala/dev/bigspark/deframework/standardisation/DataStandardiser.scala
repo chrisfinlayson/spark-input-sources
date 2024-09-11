@@ -1,11 +1,12 @@
 package dev.bigspark.deframework.standardisation
 
+import dev.bigspark.SparkSessionWrapper
 import dev.bigspark.deframework.config.ConfigReaderContract
 import io.delta.tables.DeltaTable
 import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.sql.functions._
 
-class DataStandardiser(rawDpPath: String, tempStdDpPath: String, stdDpPath: String)(implicit spark: SparkSession) {
+class DataStandardiser (spark: SparkSession, rawDpPath: String, tempStdDpPath: String, stdDpPath: String){
 
   def createTempStdDpWithSourceColumns(sourceColumnsSchema: DataFrame): Unit = {
     sourceColumnsSchema.createOrReplaceTempView("source_columns_config_table")
@@ -31,7 +32,7 @@ class DataStandardiser(rawDpPath: String, tempStdDpPath: String, stdDpPath: Stri
     val tempData = spark.sql(selectQuery)
     
     // Delete the existing Delta table if it exists
-    DeltaTable.forPath(spark, tempStdDpPath).delete()
+    DeltaTable.forName("raw_dp").delete()
     
     // Write the new data to the Delta table
     tempData.write
@@ -39,8 +40,7 @@ class DataStandardiser(rawDpPath: String, tempStdDpPath: String, stdDpPath: Stri
       .mode("overwrite")
       .save(tempStdDpPath)
     
-    // Create or replace the table in the metastore
-    spark.sql(s"CREATE OR REPLACE TABLE delta.`$tempStdDpPath` USING DELTA LOCATION '$tempStdDpPath'")
+    spark.sql(s"CREATE TABLE IF NOT EXISTS delta.`$tempStdDpPath` USING DELTA LOCATION '$tempStdDpPath'")
   }
 
   def addNewColumnsInTempStdDp(newColumnsSchema: DataFrame): Unit = {
@@ -53,10 +53,10 @@ class DataStandardiser(rawDpPath: String, tempStdDpPath: String, stdDpPath: Stri
   }
 
   def updateColumnDescriptionsMetadata(columnDescriptions: Map[String, String]): Unit = {
-    columnDescriptions.foreach { case (columnName, description) =>
-      val columnDescriptionUpdateSql = s"ALTER TABLE delta.`$tempStdDpPath` CHANGE COLUMN $columnName COMMENT '$description';"
-      spark.sql(columnDescriptionUpdateSql)
+    val alterTableStatements = columnDescriptions.map { case (colName, description) =>
+      s"ALTER TABLE delta.`$tempStdDpPath` ALTER COLUMN `$colName` COMMENT '$description'"
     }
+    alterTableStatements.foreach(spark.sql)
   }
 
   def moveDataToStdDp(columnSequenceOrder: Seq[String]): Unit = {

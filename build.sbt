@@ -39,7 +39,10 @@ lazy val root = (project in file("."))
         "org.apache.spark" %% "spark-core" % sparkVersion % Provided,
         "org.apache.spark" %% "spark-sql" % sparkVersion % Provided,
         "com.github.pureconfig" %% "pureconfig" % "0.17.2",
+        // Data sources
         "io.delta" %% "delta-core" % "2.2.0",
+        "org.apache.iceberg" %% "iceberg-spark-runtime-3.3" % "1.3.1",
+        "org.postgresql" % "postgresql" % "42.6.0",
         "com.google.cloud.spark" %% "spark-bigquery" % "0.28.0",
         // For unit testing
         "org.mockito" % "mockito-core" % "4.6.1" % Test,

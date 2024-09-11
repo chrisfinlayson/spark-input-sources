@@ -1,21 +1,6 @@
-/*
- * Copyright 2023 GrowingInTech.com. All Rights Reserved.
- *
- * Licensed under the Apache License, Version 2.0 (the "License"). You may not
- * use this file except in compliance with the License. A copy of the License
- * is located at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * or in the "license" file accompanying this file. This file is distributed on
- * an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
- * express or implied. See the License for the specific language governing
- * permissions and limitations under the License.
- *
- */
 package dev.bigspark.datasources
 
-import  dev.bigspark.SparkSessionWrapper
+import dev.bigspark.SparkSessionWrapper
 
 import org.apache.spark.sql.DataFrame
 
@@ -137,6 +122,50 @@ object InputSources {
         spark.read.format("bigquery")
           .option("project", projectId)
           .load(query)
+      }
+    }
+  }
+
+  final case class PostgresSource(
+                                   url: String,
+                                   table: String,
+                                   user: String,
+                                   password: String,
+                                   filter: Option[String] = None
+                                 ) extends InputSources with SparkSessionWrapper {
+
+    override def loadData: DataFrame = {
+      val baseDF = spark.read
+        .format("jdbc")
+        .option("url", url)
+        .option("dbtable", table)
+        .option("user", user)
+        .option("password", password)
+        .load()
+
+      filter match {
+        case Some(filterCondition) => baseDF.filter(filterCondition)
+        case None => baseDF
+      }
+    }
+  }
+
+  final case class IcebergSource(
+                                  tableName: String,
+                                  path: String,
+                                  filter: Option[String] = None,
+                                  snapshotId: Option[Long] = None
+                                ) extends InputSources with SparkSessionWrapper {
+
+    override def loadData: DataFrame = {
+      val baseDF = snapshotId match {
+        case Some(id) => spark.read.format("iceberg").option("snapshot-id", id).option("path", path).table(tableName)
+        case None => spark.read.format("iceberg").option("path", path).table(tableName)
+      }
+
+      filter match {
+        case Some(filterCondition) => baseDF.filter(filterCondition)
+        case None => baseDF
       }
     }
   }

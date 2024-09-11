@@ -34,6 +34,10 @@ core/target
 pubsub/lib_managed
 pubsub/target
 
+src/test/resources/raw_dp
+src/test/resources/std_dp
+src/test/resources/std_dp_temp
+
 target/*
 project/target
 project/project

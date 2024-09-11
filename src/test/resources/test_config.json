@@ -45,7 +45,7 @@
             {
                 "name" : "Product_ID",
                 "data_type" : "string",
-                "sql_transformation" : "MERGE INTO delta.`{temp_std_dp_path}` dest USING delta.`dbfs:/FileStore/project/Product` src ON dest.Product_Name = src.Product_Name WHEN MATCHED THEN UPDATE SET dest.Product_ID = src.Product_ID"
+                "sql_transformation" : "MERGE INTO delta.`{temp_std_dp_path}` dest USING delta.`{temp_std_dp_path}` src ON dest.Product_Name = src.Product_Name WHEN MATCHED THEN UPDATE SET dest.Product_ID = src.Product_ID"
             }
         ]
     },
