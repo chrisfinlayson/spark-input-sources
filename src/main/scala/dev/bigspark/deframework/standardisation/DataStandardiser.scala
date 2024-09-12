@@ -31,10 +31,7 @@ class DataStandardiser (spark: SparkSession, rawDpPath: String, tempStdDpPath: S
     println(selectQuery)
     val tempData = spark.sql(selectQuery)
     
-    // Delete the existing Delta table if it exists
-    DeltaTable.forName("raw_dp").delete()
-    
-    // Write the new data to the Delta table
+    // Update to use table name
     tempData.write
       .format("delta")
       .mode("overwrite")
@@ -48,6 +45,7 @@ class DataStandardiser (spark: SparkSession, rawDpPath: String, tempStdDpPath: S
       val addNewColumnsSql = s"ALTER TABLE delta.`$tempStdDpPath` ADD COLUMN ${row.getAs[String]("name")} ${row.getAs[String]("data_type")}"
       val sqlTransformation = row.getAs[String]("sql_transformation").replace("{temp_std_dp_path}", tempStdDpPath)
       spark.sql(addNewColumnsSql)
+      println("Debug:"+addNewColumnsSql)
       spark.sql(sqlTransformation)
     }
   }

@@ -49,3 +49,4 @@ project/project
 *.iws
 .*.sw?
 .idea
+.metals
