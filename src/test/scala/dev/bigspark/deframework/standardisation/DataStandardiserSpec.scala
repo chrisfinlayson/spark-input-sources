@@ -1,12 +1,13 @@
 package dev.bigspark.deframework.standardisation
 
+import com.typesafe.config.{Config, ConfigFactory}
 import dev.bigspark.SparkSessionWrapper
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.BeforeAndAfterAll
-import org.mockito.Mockito._
 import org.scalatestplus.mockito.MockitoSugar
-import dev.bigspark.deframework.config.ConfigReaderContract
+import dev.bigspark.deframework.config.AppConfigReader
+import dev.bigspark.deframework.inputsources.FileSource
 
 class DataStandardiserSpec extends AnyFlatSpec with Matchers with BeforeAndAfterAll with MockitoSugar with SparkSessionWrapper {
   val rootPath = "/Users/christopherfinlayson/dev/spark-input-sources/src/test/resources"
@@ -73,11 +74,17 @@ class DataStandardiserSpec extends AnyFlatSpec with Matchers with BeforeAndAfter
     spark.sql(s"CREATE TABLE IF NOT EXISTS product_std USING DELTA LOCATION '$stdDpPath/product'")
 
   }
+  val configPath = getClass.getResource("/test.conf").getPath
+  val config: Config = ConfigFactory.parseFile(new java.io.File(configPath))
+  val configReader = new AppConfigReader(config)(spark)
 
+  val rawDpSource = new FileSource(spark, rawDpPath, "raw_dp")
+  val tempStdDpSource = new FileSource(spark, tempStdDpPath, "temp_std_dp")
+  val stdDpSource = new FileSource(spark, stdDpPath, "std_dp")
+
+  val dataStandardiser = new DataStandardiser(spark, rawDpSource, tempStdDpSource, stdDpSource, configReader)
 
   "createTempStdDpWithSourceColumns" should "create a temporary standardised table with source columns" in {
-
-    val dataStandardiser = new DataStandardiser(spark, rawDpPath, tempStdDpPath, stdDpPath)
 
     val sourceColumnsSchema = Seq(
       ("sup_id", "Supplier_ID", "string", "CONCAT('SUP', '-' , sup_id)"),
@@ -88,39 +95,52 @@ class DataStandardiserSpec extends AnyFlatSpec with Matchers with BeforeAndAfter
       ("", "Total_Cost", "int", "price * quantity")
     ).toDF("raw_name", "standardised_name", "data_type", "sql_transformation")
 
-    dataStandardiser.createTempStdDpWithSourceColumns(sourceColumnsSchema)
+    dataStandardiser.createTempStdDpWithSourceColumns()
 
     val resultDf = spark.sql(s"SELECT * FROM delta.`$tempStdDpPath`")
     resultDf.columns should contain allOf ("Supplier_ID", "Supplier_Name", "Purchase_Price", "Product_Name", "Purchase_Quantity", "Total_Cost")
   }
 
   "addNewColumnsInTempStdDp" should "add new columns to the temporary standardised table" in {
-    val dataStandardiser = new DataStandardiser(spark, rawDpPath, tempStdDpPath, stdDpPath)
+    // First create the temporary standardized table
+    val sourceColumnsSchema = Seq(
+      ("sup_id", "Supplier_ID", "string", "CONCAT('SUP', '-' , sup_id)"),
+      ("name", "Supplier_Name", "string", ""),
+      ("price", "Purchase_Price", "int", ""),
+      ("prod_name", "Product_Name", "string", ""),
+      ("quantity", "Purchase_Quantity", "int", ""),
+      ("", "Total_Cost", "int", "price * quantity")
+    ).toDF("raw_name", "standardised_name", "data_type", "sql_transformation")
 
+    dataStandardiser.createTempStdDpWithSourceColumns()
+
+    // Create/Register the temp table explicitly
+    spark.sql(s"CREATE TABLE IF NOT EXISTS temp_std_dp USING DELTA LOCATION '$tempStdDpPath'")
+
+    // Then add new columns
     val newColumnsSchema = Seq(
-      ("Product_ID", "string", "MERGE INTO delta.`{temp_std_dp_path}` dest USING product_std src ON dest.Product_Name = src.Product_Name WHEN MATCHED THEN UPDATE SET dest.Product_ID = src.Product_ID")
+      ("Product_ID", "string", "MERGE INTO temp_std_dp dest USING product_std src ON dest.Product_Name = src.Product_Name WHEN MATCHED THEN UPDATE SET dest.Product_ID = src.Product_ID")
     ).toDF("name", "data_type", "sql_transformation")
 
-    dataStandardiser.addNewColumnsInTempStdDp(newColumnsSchema)
+    dataStandardiser.addNewColumnsInTempStdDp()
 
     val resultDf = spark.sql(s"SELECT * FROM delta.`$tempStdDpPath`")
     resultDf.columns should contain ("Product_ID")
   }
 
   "updateColumnDescriptionsMetadata" should "update column descriptions metadata" in {
-    val dataStandardiser = new DataStandardiser(spark, rawDpPath, tempStdDpPath, stdDpPath)
 
     val columnDescriptions = Map(
-      "Supplier_ID" -> "Unique identifier for the supplier",
+      "Supplier_ID" -> "Unique identifier for the supplier of a product",
       "Supplier_Name" -> "Name of the supplier",
-      "Purchase_Price" -> "Price at which the product was purchased",
+      "Purchase_Price" -> "Price at which the supplier sells the product",
       "Product_Name" -> "Name of the product",
-      "Purchase_Quantity" -> "Quantity of the product purchased",
-      "Total_Cost" -> "Total cost calculated as price * quantity",
+      "Purchase_Quantity" -> "Quantity of the product available with the supplier",
+      "Total_Cost" -> "Total amount spent on purchasing a specific quantity of items at the given purchase price.",
       "Product_ID" -> "Unique identifier for the product"
     )
 
-    dataStandardiser.updateColumnDescriptionsMetadata(columnDescriptions)
+    dataStandardiser.updateColumnDescriptionsMetadata()
 
     val resultDf = spark.sql(s"DESCRIBE EXTENDED delta.`$tempStdDpPath`")
     
@@ -144,11 +164,9 @@ class DataStandardiserSpec extends AnyFlatSpec with Matchers with BeforeAndAfter
   }
 
   "moveDataToStdDp" should "move data to the standardised table in the specified column order" in {
-    val dataStandardiser = new DataStandardiser(spark, rawDpPath, tempStdDpPath, stdDpPath)
+    val columnSequenceOrder = Seq("Supplier_ID", "Supplier_Name", "Product_ID", "Product_Name", "Purchase_Price", "Purchase_Quantity", "Total_Cost")
 
-    val columnSequenceOrder = Seq("Supplier_ID", "Supplier_Name", "Purchase_Price", "Product_Name", "Purchase_Quantity", "Total_Cost", "Product_ID")
-
-    dataStandardiser.moveDataToStdDp(columnSequenceOrder)
+    dataStandardiser.moveDataToStdDp()
 
     val resultDf = spark.sql(s"SELECT * FROM delta.`$stdDpPath`")
     resultDf.columns shouldEqual columnSequenceOrder
@@ -158,38 +176,11 @@ class DataStandardiserSpec extends AnyFlatSpec with Matchers with BeforeAndAfter
 
   "run" should "execute the entire standardization process" in {
     beforeAll()
-    val dataStandardiser = new DataStandardiser(spark, rawDpPath, tempStdDpPath, stdDpPath)
-    val configReader = mock[ConfigReaderContract]
 
-    when(configReader.readSourceColumnsSchema()).thenReturn(Seq(
-      ("sup_id", "Supplier_ID", "string", "CONCAT('SUP', '-' , sup_id)"),
-      ("name", "Supplier_Name", "string", ""),
-      ("price", "Purchase_Price", "int", ""),
-      ("prod_name", "Product_Name", "string", ""),
-      ("quantity", "Purchase_Quantity", "int", ""),
-      ("", "Total_Cost", "int", "price * quantity")
-    ).toDF("raw_name", "standardised_name", "data_type", "sql_transformation"))
-
-    when(configReader.readNewColumnsSchema()).thenReturn(Seq(
-      ("Product_ID", "string", "MERGE INTO delta.`{temp_std_dp_path}` dest USING product_std src ON dest.Product_Name = src.Product_Name WHEN MATCHED THEN UPDATE SET dest.Product_ID = src.Product_ID")
-    ).toDF("name", "data_type", "sql_transformation"))
-
-    when(configReader.readColumnDescriptionsMetadata()).thenReturn(Map(
-      "Supplier_ID" -> "Unique identifier for the supplier",
-      "Supplier_Name" -> "Name of the supplier",
-      "Purchase_Price" -> "Price at which the product was purchased",
-      "Product_Name" -> "Name of the product",
-      "Purchase_Quantity" -> "Quantity of the product purchased",
-      "Total_Cost" -> "Total cost calculated as price * quantity",
-      "Product_ID" -> "Unique identifier for the product"
-    ))
-
-    when(configReader.readColumnSequenceOrder()).thenReturn(Seq("Supplier_ID", "Supplier_Name", "Purchase_Price", "Product_Name", "Purchase_Quantity", "Total_Cost", "Product_ID"))
-
-    dataStandardiser.run(configReader)
+    dataStandardiser.run()
 
     val resultDf = spark.read.format("delta").load(stdDpPath)
     resultDf.show()
-    resultDf.columns shouldEqual Seq("Supplier_ID", "Supplier_Name", "Purchase_Price", "Product_Name", "Purchase_Quantity", "Total_Cost", "Product_ID")
+    resultDf.columns shouldEqual Seq("Supplier_ID", "Supplier_Name", "Product_ID", "Product_Name", "Purchase_Price", "Purchase_Quantity", "Total_Cost")
   }
 }

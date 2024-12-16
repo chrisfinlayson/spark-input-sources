@@ -1,6 +1,7 @@
 package dev.bigspark.datasources
 
 import dev.bigspark.SparkSessionWrapper
+import dev.bigspark.security.VaultCredentialsManager
 
 import org.apache.spark.sql.DataFrame
 
@@ -23,51 +24,32 @@ object InputSources {
                              ) extends InputSources with SparkSessionWrapper {
 
     override def loadData: DataFrame = {
-
-      if (filter.isDefined) {
-        withFilter
-      }
-      else {
-        withoutFilter
-      }
-    }
-
-    private def withFilter: DataFrame = {
-      if (format != "delta" & versionOrTime.isEmpty & optionValue.isEmpty) {
-        spark.read.format(format).load(filePath).filter(filter.get)
-      }
-      else {
-        exceptionCheck()
-        spark.read.format(format)
-          .option(optionValue.get, versionOrTime.get)
-          .load(filePath)
-          .filter(filter.get)
-      }
-    }
-
-    private def withoutFilter: DataFrame = {
-      if (format != "delta" & versionOrTime.isEmpty & optionValue.isEmpty) {
+      val baseDF = if (format != "delta" && versionOrTime.isEmpty && optionValue.isEmpty) {
         spark.read.format(format).load(filePath)
-      }
-      else {
+      } else {
         exceptionCheck()
         spark.read.format(format)
           .option(optionValue.get, versionOrTime.get)
           .load(filePath)
       }
+
+      filter match {
+        case Some(filterCondition) => baseDF.filter(filterCondition)
+        case None => baseDF
+      }
     }
 
-    private def exceptionCheck(): Unit = {
-      if (versionOrTime.isDefined & format != "delta") {
+    def exceptionCheck(): Unit = {
+      if (versionOrTime.isDefined && format != "delta") {
         throw new IllegalArgumentException("versionOrTime cannot be defined when fileType is not delta.")
       }
-      if (optionValue.isDefined & format != "delta") {
+      if (optionValue.isDefined && format != "delta") {
         throw new IllegalArgumentException("optionValue cannot be defined when fileType is not delta.")
       }
-      if (optionValue.isDefined & versionOrTime.isEmpty) {
+      if (optionValue.isDefined && versionOrTime.isEmpty) {
         throw new IllegalArgumentException("optionValue cannot be defined when versionOrTime is empty.")
       }
-      if (optionValue.isEmpty & versionOrTime.isDefined) {
+      if (optionValue.isEmpty && versionOrTime.isDefined) {
         throw new IllegalArgumentException("versionOrTime cannot be defined when optionValue is empty.")
       }
     }
@@ -88,12 +70,10 @@ object InputSources {
                               ) extends InputSources with SparkSessionWrapper {
 
     override def loadData: DataFrame = {
-
-      if (filter.isDefined) {
-        spark.table(tableName).filter(filter.get)
-      }
-      else {
-        spark.table(tableName)
+      val baseDF = spark.table(tableName)
+      filter match {
+        case Some(filterCondition) => baseDF.filter(filterCondition)
+        case None => baseDF
       }
     }
   }
@@ -169,4 +149,88 @@ object InputSources {
       }
     }
   }
+
+  final case class JdbcSource(
+    url: String,
+    table: String,
+    credentials: Either[VaultCredentials, DirectCredentials],
+    filter: Option[String] = None,
+    fetchSize: Option[Int] = None,
+    partitionColumn: Option[String] = None,
+    numPartitions: Option[Int] = None,
+    lowerBound: Option[Long] = None,
+    upperBound: Option[Long] = None
+  ) extends InputSources with SparkSessionWrapper {
+
+    def getDatabaseType: String = {
+      url.toLowerCase match {
+        case u if u.contains("postgresql") => "postgresql"
+        case u if u.contains("oracle") => "oracle"
+        case u if u.contains("sqlserver") => "sqlserver"
+        case u if u.contains("teradata") => "teradata"
+        case _ => throw new IllegalArgumentException(s"Unsupported database type in URL: $url")
+      }
+    }
+
+    def getDriverClass: String = getDatabaseType match {
+      case "postgresql" => "org.postgresql.Driver"
+      case "oracle" => "oracle.jdbc.driver.OracleDriver"
+      case "sqlserver" => "com.microsoft.sqlserver.jdbc.SQLServerDriver"
+      case "teradata" => "com.teradata.jdbc.TeraDriver"
+    }
+
+    override def loadData: DataFrame = {
+      val (username, password) = credentials match {
+        case Left(vaultCreds) =>
+          val vault = new VaultCredentialsManager(
+            vaultCreds.vaultAddress,
+            vaultCreds.vaultToken,
+            vaultCreds.vaultPath
+          )
+          vault.getCredentials(getDatabaseType)
+        case Right(directCreds) =>
+          (directCreds.username, directCreds.password)
+      }
+
+      val reader = spark.read
+        .format("jdbc")
+        .option("url", url)
+        .option("dbtable", table)
+        .option("user", username)
+        .option("password", password)
+        .option("driver", getDriverClass)
+
+      // Add optional configurations
+      fetchSize.foreach(size => reader.option("fetchsize", size))
+      
+      // Add partitioning options if all required parameters are present
+      if (partitionColumn.isDefined && numPartitions.isDefined && 
+          lowerBound.isDefined && upperBound.isDefined) {
+        reader
+          .option("partitionColumn", partitionColumn.get)
+          .option("numPartitions", numPartitions.get)
+          .option("lowerBound", lowerBound.get)
+          .option("upperBound", upperBound.get)
+      }
+
+      val baseDF = reader.load()
+
+      filter match {
+        case Some(filterCondition) => baseDF.filter(filterCondition)
+        case None => baseDF
+      }
+    }
+  }
+
+  // Credential case classes
+  case class VaultCredentials(
+    vaultAddress: String,
+    vaultToken: String,
+    vaultPath: String
+  )
+
+  case class DirectCredentials(
+    username: String,
+    password: String
+  )
 }

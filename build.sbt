@@ -50,7 +50,8 @@ lazy val root = (project in file("."))
         "org.scalatest" %% "scalatest" % scalatestVersion % Test,
         "org.scalatest" %% "scalatest-shouldmatchers" % scalatestVersion % Test,
         "org.scalatestplus" %% "scalacheck-1-15" % "3.2.11.0" % Test,
-        "org.scalacheck" %% "scalacheck" % "1.17.0" % Test
+        "org.scalacheck" %% "scalacheck" % "1.17.0" % Test,
+        "com.bettercloud" % "vault-java-driver" % "5.1.0"
       )
     }
   )

@@ -1,8 +1,9 @@
 package dev.bigspark.deframework.config
 
+import com.typesafe.config.Config
+import org.apache.spark.sql.{DataFrame, SparkSession}
 import pureconfig._
 import pureconfig.generic.auto._
-import org.apache.spark.sql.{DataFrame, SparkSession}
 
 case class SourceColumn(
   rawName: String,
@@ -26,12 +27,20 @@ case class Metadata(
   columnDescriptions: Map[String, String]
 )
 
-case class Config(
+case class DpConfig(
   dataProductName: String,
   rawDataProductName: String,
   schema: Schema,
   columnSequenceOrder: List[String],
-  metadata: Metadata
+  metadata: Metadata,
+  joinConditions: Option[List[JoinCondition]] // Add this line
+)
+
+case class JoinCondition(
+  leftDataset: String,
+  rightDataset: String,
+  joinType: String,
+  conditions: List[String]
 )
 
 trait ConfigReaderContract {
@@ -39,12 +48,13 @@ trait ConfigReaderContract {
   def readNewColumnsSchema(): DataFrame
   def readColumnDescriptionsMetadata(): Map[String, String]
   def readColumnSequenceOrder(): Seq[String]
+  def readJoinConditions(): List[JoinCondition] // Add this line
 }
 
-class ConfigReader(configPath: String)(implicit spark: SparkSession) extends ConfigReaderContract {
-  private val config = ConfigSource.file(configPath).loadOrThrow[Config]
-
+class AppConfigReader(config: Config)(implicit spark: SparkSession) extends ConfigReaderContract {
   import spark.implicits._
+
+  private val dpConfig: DpConfig = ConfigSource.fromConfig(config).loadOrThrow[DpConfig]
 
   private def convertCamelCaseToSnakeCase(columnName: String): String = {
     columnName.replaceAll("([A-Z])", "_$1").toLowerCase.stripPrefix("_")
@@ -57,18 +67,22 @@ class ConfigReader(configPath: String)(implicit spark: SparkSession) extends Con
   }
 
   override def readSourceColumnsSchema(): DataFrame = {
-    renameColumns(config.schema.sourceColumns.toDF())
+    renameColumns(dpConfig.schema.sourceColumns.toDF())
   }
 
   override def readNewColumnsSchema(): DataFrame = {
-    renameColumns(config.schema.newColumns.toDF())
+    renameColumns(dpConfig.schema.newColumns.toDF())
   }
 
   override def readColumnDescriptionsMetadata(): Map[String, String] = {
-    config.metadata.columnDescriptions
+    dpConfig.metadata.columnDescriptions
   }
 
   override def readColumnSequenceOrder(): Seq[String] = {
-    config.columnSequenceOrder
+    dpConfig.columnSequenceOrder
+  }
+
+  override def readJoinConditions(): List[JoinCondition] = {
+    dpConfig.joinConditions.getOrElse(List.empty)
   }
 }

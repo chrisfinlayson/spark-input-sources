@@ -1,21 +1,21 @@
 package dev.bigspark.deframework.standardisation
 
-import dev.bigspark.SparkSessionWrapper
-import dev.bigspark.deframework.config.ConfigReaderContract
-import io.delta.tables.DeltaTable
+import dev.bigspark.deframework.config.AppConfigReader
+import dev.bigspark.deframework.inputsources.InputSource
 import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.sql.functions._
 
-class DataStandardiser (spark: SparkSession, rawDpPath: String, tempStdDpPath: String, stdDpPath: String){
+class DataStandardiser(spark: SparkSession, rawDpSource: InputSource, tempStdDpSource: InputSource, stdDpSource: InputSource, configReader: AppConfigReader) {
 
-  def createTempStdDpWithSourceColumns(sourceColumnsSchema: DataFrame): Unit = {
+  def createTempStdDpWithSourceColumns(): Unit = {
+    val sourceColumnsSchema = configReader.readSourceColumnsSchema()
     sourceColumnsSchema.createOrReplaceTempView("source_columns_config_table")
     val selectQuerySql = s"""
       SELECT 
         concat(
           "SELECT ", 
           array_join(collect_list(select_expression), ", "), 
-          " FROM delta.`$rawDpPath`"
+          " FROM ", "${rawDpSource.getTableName}"
         ) as select_query 
       FROM (
         SELECT 
@@ -31,61 +31,68 @@ class DataStandardiser (spark: SparkSession, rawDpPath: String, tempStdDpPath: S
     println(selectQuery)
     val tempData = spark.sql(selectQuery)
     
-    // Update to use table name
-    tempData.write
-      .format("delta")
-      .mode("overwrite")
-      .save(tempStdDpPath)
-    
-    spark.sql(s"CREATE TABLE IF NOT EXISTS delta.`$tempStdDpPath` USING DELTA LOCATION '$tempStdDpPath'")
+    tempStdDpSource.write(tempData)
   }
 
-  def addNewColumnsInTempStdDp(newColumnsSchema: DataFrame): Unit = {
+  def addNewColumnsInTempStdDp(): Unit = {
+    val newColumnsSchema = configReader.readNewColumnsSchema()
+    val tempStdDpTableName = tempStdDpSource.getTableName
     newColumnsSchema.collect().foreach { row =>
-      val addNewColumnsSql = s"ALTER TABLE delta.`$tempStdDpPath` ADD COLUMN ${row.getAs[String]("name")} ${row.getAs[String]("data_type")}"
-      val sqlTransformation = row.getAs[String]("sql_transformation").replace("{temp_std_dp_path}", tempStdDpPath)
+      val addNewColumnsSql = s"ALTER TABLE $tempStdDpTableName ADD COLUMN ${row.getAs[String]("name")} ${row.getAs[String]("data_type")}"
+      val sqlTransformation = row.getAs[String]("sql_transformation").replace("{temp_std_dp_path}", tempStdDpTableName)
       spark.sql(addNewColumnsSql)
       println("Debug:"+addNewColumnsSql)
+      spark.sql("SHOW TABLES").show()
+      println("Debug:"+sqlTransformation)
       spark.sql(sqlTransformation)
     }
   }
 
-  def updateColumnDescriptionsMetadata(columnDescriptions: Map[String, String]): Unit = {
+  def updateColumnDescriptionsMetadata(): Unit = {
+    val columnDescriptions = configReader.readColumnDescriptionsMetadata()
+    val tempStdDpTableName = tempStdDpSource.getTableName
     val alterTableStatements = columnDescriptions.map { case (colName, description) =>
-      s"ALTER TABLE delta.`$tempStdDpPath` ALTER COLUMN `$colName` COMMENT '$description'"
+      s"ALTER TABLE $tempStdDpTableName ALTER COLUMN `$colName` COMMENT '$description'"
     }
     alterTableStatements.foreach(spark.sql)
   }
 
-  def moveDataToStdDp(columnSequenceOrder: Seq[String]): Unit = {
-    val tempStdDf = spark.read.format("delta").load(tempStdDpPath)
+  def moveDataToStdDp(): Unit = {
+    val columnSequenceOrder = configReader.readColumnSequenceOrder()
+    val tempStdDf = tempStdDpSource.read()
     val orderedDf = tempStdDf.select(columnSequenceOrder.map(col): _*)
-    orderedDf.write.option("mergeSchema", "true").format("delta").mode("overwrite").save(stdDpPath)
+    stdDpSource.write(orderedDf)
   }
 
-  def run(configReader: ConfigReaderContract): Unit = {
+  def run(): Unit = {
     println("Raw df : ")
-    val rawDf = spark.read.format("delta").load(rawDpPath)
+    val rawDf = rawDpSource.read()
     rawDf.show()
 
-    val sourceColumnsSchema = configReader.readSourceColumnsSchema()
-    createTempStdDpWithSourceColumns(sourceColumnsSchema)
-
-    val newColumnsSchema = configReader.readNewColumnsSchema()
-    addNewColumnsInTempStdDp(newColumnsSchema)
-
-    val columnDescriptions = configReader.readColumnDescriptionsMetadata()
-    updateColumnDescriptionsMetadata(columnDescriptions)
-
-    val columnSequenceOrder = configReader.readColumnSequenceOrder()
-    moveDataToStdDp(columnSequenceOrder)
+    createTempStdDpWithSourceColumns()
+    addNewColumnsInTempStdDp()
+    updateColumnDescriptionsMetadata()
+    moveDataToStdDp()
 
     println("Standardised df : ")
-    val stdDf = spark.read.format("delta").load(stdDpPath)
+    val stdDf = stdDpSource.read()
     stdDf.show()
 
     println("Schema information for Standardised df : ")
     stdDf.printSchema()
-    spark.sql(s"DESCRIBE TABLE delta.`$stdDpPath`").show()
+    spark.sql(s"DESCRIBE TABLE ${stdDpSource.getTableName}").show()
+  }
+
+  def performJoins(datasets: Map[String, DataFrame]): DataFrame = {
+    val joinConditions = configReader.readJoinConditions()
+    
+    joinConditions.foldLeft(datasets(joinConditions.head.leftDataset)) { (accDF, joinCondition) =>
+      val rightDF = datasets(joinCondition.rightDataset)
+      accDF.join(
+        rightDF,
+        expr(joinCondition.conditions.mkString(" AND ")),
+        joinCondition.joinType
+      )
+    }
   }
 }
