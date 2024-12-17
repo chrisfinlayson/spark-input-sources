@@ -71,34 +71,34 @@ object SparkJobRunner extends SparkSessionWrapper {
       
       // Validate configuration
       validateConfig(config) match {
-        case Left(error) => 
+        case Left(error) =>
           throw new IllegalArgumentException(s"Configuration validation failed: $error")
         case Right(validConfig) =>
           // Load the input data
           val inputDF = validConfig.input.loadData
-          
+
           // Configure Iceberg write options
-          val writer = spark.write
+          val writer = inputDF.write
             .format("iceberg")
             .mode(validConfig.writeMode)
-          
+
           // Add optional properties
           validConfig.output.properties.foreach(_.foreach { case (key, value) =>
             writer.option(key, value)
           })
-          
+
           // Add partitioning if specified
           val finalWriter = validConfig.output.partitionBy match {
             case Some(columns) => writer.partitionBy(columns: _*)
             case None => writer
           }
-          
+
           // Write the output
           finalWriter.saveAsTable(validConfig.output.fullTableName)
-          
+
           // Get output DataFrame for metrics
           val outputDF = spark.table(validConfig.output.fullTableName)
-          
+
           // Collect and save metrics
           val metrics = MetricsCollector.collectMetrics(
             validConfig.jobName,
@@ -106,17 +106,19 @@ object SparkJobRunner extends SparkSessionWrapper {
             inputDF,
             outputDF
           )
-          
+
           MetricsCollector.saveMetrics(metrics, spark, validConfig.metricsTable)
-          
-          println(s"""
-            |Job completed successfully:
-            |Job Name: ${metrics.jobName}
-            |Execution Time: ${metrics.executionTimeSeconds}s
-            |Input Records: ${metrics.inputRecordCount}
-            |Output Records: ${metrics.outputRecordCount}
-            |""".stripMargin)
-          
+
+          println(
+            s"""
+               |Job completed successfully:
+               |Job Name: ${metrics.jobName}
+               |Execution Time: ${metrics.executionTimeSeconds}s
+               |Input Records: ${metrics.inputRecordCount}
+               |Output Records: ${metrics.outputRecordCount}
+               |""".stripMargin)
+
+      }
     } match {
       case Success(_) => 
         spark.stop()

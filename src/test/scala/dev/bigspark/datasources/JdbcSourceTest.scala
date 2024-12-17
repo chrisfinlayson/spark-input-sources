@@ -1,5 +1,6 @@
 package dev.bigspark.datasources
 
+import com.typesafe.config.ConfigFactory
 import dev.bigspark.security.VaultCredentialsManager
 import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.mockito.Mockito._
@@ -7,6 +8,8 @@ import org.scalatest.BeforeAndAfterAll
 import org.scalatest.flatspec.AnyFlatSpec
 import org.scalatest.matchers.should.Matchers
 import org.scalatestplus.mockito.MockitoSugar
+import pureconfig._
+import pureconfig.generic.auto._
 
 class JdbcSourceTest extends AnyFlatSpec with Matchers with BeforeAndAfterAll with MockitoSugar {
   
@@ -113,5 +116,68 @@ class JdbcSourceTest extends AnyFlatSpec with Matchers with BeforeAndAfterAll wi
     source.lowerBound shouldBe Some(1L)
     source.upperBound shouldBe Some(1000L)
     source.filter shouldBe Some("column = 'value'")
+  }
+
+  it should "parse HOCON configuration correctly" in {
+    val hoconConfig = """
+      |input {
+      |  type = jdbc-source
+      |  url = "jdbc:postgresql://postgres-dbt:5432/dbtdb"
+      |  table = "dbt_raw_data.aisles"
+      |  credentials {
+      |    username = "dbtuser" 
+      |    password = "pssd"
+      |  }
+      |  fetch-size = 1000
+      |}
+      """.stripMargin
+
+    val config = ConfigFactory.parseString(hoconConfig)
+    val source = InputSources.JdbcSource.fromConfig(config.getConfig("input"))
+
+    source.url shouldBe "jdbc:postgresql://postgres-dbt:5432/dbtdb"
+    source.table shouldBe "dbt_raw_data.aisles"
+    source.fetchSize shouldBe Some(1000)
+    
+    val (username, password) = source.credentials match {
+      case Right(InputSources.DirectCredentials(u, p)) => (u, p)
+      case _ => fail("Expected DirectCredentials")
+    }
+
+    username shouldBe "dbtuser"
+    password shouldBe "pssd"
+  }
+
+  it should "extract data from postgres and return non-empty DataFrame" in {
+    val hoconConfig = """
+      |input {
+      |  type = jdbc-source
+      |  url = "jdbc:postgresql://postgres-dbt:5432/dbtdb"
+      |  table = "dbt_raw_data.aisles"
+      |  credentials {
+      |    username = "dbtuser"
+      |    password = "pssd"
+      |  }
+      |  fetch-size = 1000
+      |}
+      """.stripMargin
+
+    val config = ConfigFactory.parseString(hoconConfig)
+    val source = InputSources.JdbcSource.fromConfig(config.getConfig("input"))
+
+    try {
+      val df = source.loadData
+      
+      // Verify DataFrame is not empty
+      df.count() should be > 0L
+      
+      // Verify expected columns exist
+      df.columns should contain allOf("aisle_id", "aisle")
+      
+      // Print sample data for verification
+      df.show(5)
+    } finally {
+      spark.stop()
+    }
   }
 } 

@@ -107,20 +107,36 @@ object InputSources {
   }
 
   final case class PostgresSource(
-                                   url: String,
-                                   table: String,
-                                   user: String,
-                                   password: String,
-                                   filter: Option[String] = None
-                                 ) extends InputSources with SparkSessionWrapper {
+    url: String,
+    table: String,
+    credentials: Either[VaultCredentials, DirectCredentials] = Left(VaultCredentials(
+      sys.env.getOrElse("VAULT_ADDR", "http://vault:8200"),
+      sys.env.getOrElse("VAULT_TOKEN", "root"),
+      sys.env.getOrElse("VAULT_PATH", "postgres")
+    )),
+    filter: Option[String] = None
+  ) extends InputSources with SparkSessionWrapper {
 
     override def loadData: DataFrame = {
+      val (username, password) = credentials match {
+        case Left(vaultCreds) =>
+          val vault = new VaultCredentialsManager(
+            vaultCreds.vaultAddress,
+            vaultCreds.vaultToken,
+            vaultCreds.vaultPath
+          )
+          vault.getCredentials("postgres")
+        case Right(directCreds) =>
+          (directCreds.username, directCreds.password)
+      }
+
       val baseDF = spark.read
         .format("jdbc")
         .option("url", url)
         .option("dbtable", table)
-        .option("user", user)
-        .option("password", password)
+        .option("user", username.toString)
+        .option("password", password.toString)
+        .option("driver", "org.postgresql.Driver")
         .load()
 
       filter match {
@@ -196,8 +212,8 @@ object InputSources {
         .format("jdbc")
         .option("url", url)
         .option("dbtable", table)
-        .option("user", username)
-        .option("password", password)
+        .option("user", username.toString)
+        .option("password", password.toString)
         .option("driver", getDriverClass)
 
       // Add optional configurations
@@ -233,4 +249,23 @@ object InputSources {
     username: String,
     password: String
   )
+
+  object JdbcSource {
+    def fromConfig(config: com.typesafe.config.Config): JdbcSource = {
+      JdbcSource(
+        url = config.getString("url"),
+        table = config.getString("table"),
+        credentials = Right(DirectCredentials(
+          username = config.getString("credentials.username"),
+          password = config.getString("credentials.password")
+        )),
+        fetchSize = if (config.hasPath("fetch-size")) Some(config.getInt("fetch-size")) else None,
+        partitionColumn = if (config.hasPath("partition-column")) Some(config.getString("partition-column")) else None,
+        numPartitions = if (config.hasPath("num-partitions")) Some(config.getInt("num-partitions")) else None,
+        lowerBound = if (config.hasPath("lower-bound")) Some(config.getLong("lower-bound")) else None,
+        upperBound = if (config.hasPath("upper-bound")) Some(config.getLong("upper-bound")) else None,
+        filter = if (config.hasPath("filter")) Some(config.getString("filter")) else None
+      )
+    }
+  }
 }
